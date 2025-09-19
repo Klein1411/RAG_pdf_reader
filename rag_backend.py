@@ -96,12 +96,12 @@ import os, requests
 load_dotenv()  # đọc các biến GEMINI_API_KEY, GEMINI_MODEL,…
 
 API_KEY    = os.getenv("GEMINI_API_KEY")
-MODEL_ID   = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+MODEL_ID   = os.getenv("GEMINI_MODEL", "gemini-exp-1206")
 PROMPT     = os.getenv(
     "GEMINI_PROMPT",
     "Bạn là một trợ lý hữu ích. Hãy trả lời đầy đủ và chi tiết. Đừng lặp lại câu trả lời nếu không cần thiết."
 )
-MAX_TOKENS = int(os.getenv("GEMINI_MAX_TOKENS", "256"))
+MAX_TOKENS = int(os.getenv("GEMINI_MAX_TOKENS", "2048"))
 TEMP       = float(os.getenv("GEMINI_TEMPERATURE", "0.7"))
 
 # Kiểm tra
@@ -114,69 +114,83 @@ print("Temperature:", TEMP)
 
 # %%
 # Cell 3: Định nghĩa hàm call_gemini(prompt) – đảm bảo luôn return str
+import time
+import requests
+
+last_call_time = 0
+
+# Danh sách model ưu tiên
+MODEL_FALLBACKS = [
+    "gemini-1.5-pro",
+    "gemini-2.0",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash"
+]
+
 def call_gemini(prompt: str) -> str:
+    global last_call_time
+
     if not API_KEY:
         raise ValueError("Please set GEMINI_API_KEY in .env")
 
-    is_chat = MODEL_ID.lower().startswith("chat-")
-    # Build endpoint + payload
-    if is_chat:
-        version = "v1beta"
-        endpoint = ":generateMessage"
-        body_key = "messages"
-        body_val = [{"author": "user", "content": prompt}]
-        payload = {
-            body_key: body_val,
-            "generationConfig": {"maxOutputTokens": MAX_TOKENS, "temperature": TEMP}
-        }
-    else:
-        if MODEL_ID.endswith("-001"):
+    for model in MODEL_FALLBACKS:
+        now = time.time()
+        # Giới hạn tốc độ: tối thiểu 0.5 giây giữa 2 lần gọi
+        if now - last_call_time < 0.5:
+            time.sleep(0.5 - (now - last_call_time))
+        last_call_time = time.time()
+
+        print(f"\n;-; Đang thử model: {model}")
+
+        # Xác định version
+        if model.startswith("gemini-2.0") or model.startswith("gemini-1.5"):
             version = "v1"
-            endpoint = ":generateText"
-            body_key = "prompt"
-            body_val = {"text": prompt}
-            payload = {
-                body_key: body_val,
+        else:
+            version = "v1beta"  # cho exp cũ (nếu thêm sau)
+        endpoint = ":generateContent"
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
                 "maxOutputTokens": MAX_TOKENS,
                 "temperature": TEMP
             }
-        else:
-            version = "v1beta"
-            endpoint = ":generateContent"
-            body_key = "contents"
-            body_val = [{"parts": [{"text": prompt}]}]
-            payload = {
-                body_key: body_val,
-                "generationConfig": {"maxOutputTokens": MAX_TOKENS, "temperature": TEMP}
-            }
+        }
 
-    url = f"https://generativelanguage.googleapis.com/{version}/models/{MODEL_ID}{endpoint}?key={API_KEY}"
-    resp = requests.post(url, json=payload, headers={"Content-Type":"application/json"}, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+        url = f"https://generativelanguage.googleapis.com/{version}/models/{model}{endpoint}?key={API_KEY}"
+        print(f"[DEBUG] Gọi URL: {url}")
 
-    # Lấy candidate đầu tiên
-    cand = data.get("candidates", [{}])[0]
+        # --- Retry loop ---
+        for attempt in range(3):
+            resp = requests.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
 
-    # Chat case: unwrap message.content.parts -> str
-    if is_chat:
-        msg = cand.get("message", {}).get("content", {})
-        # msg có thể là string hoặc dict với parts
-        if isinstance(msg, str):
-            return msg
-        parts = msg.get("parts", [])
-        return "".join([p.get("text", "") for p in parts])
+            if resp.status_code == 429:
+                print(f"[429] Hết quota hoặc quá tải ở {model}. Thử lại sau...")
+                break  # thoát retry → thử model kế tiếp
 
-    # Text-only case: output or content
-    out = cand.get("output", "") or cand.get("content", "")
-    if isinstance(out, str):
-        return out
-    # Nếu out là dict (e.g. {parts:[...]})
-    parts = out.get("parts", [])
-    if parts:
-        return "".join([p.get("text", "") for p in parts])
-    # fallback
-    return str(out)
+            if resp.status_code == 404:
+                print(f"[404] Model {model} không tồn tại. Bỏ qua.")
+                break
+
+            try:
+                resp.raise_for_status()
+                data = resp.json()
+                cand = data.get("candidates", [{}])[0]
+                out = cand.get("output", "") or cand.get("content", "")
+                if isinstance(out, str):
+                    return out
+                parts = out.get("parts", [])
+                return "".join([p.get("text", "") for p in parts])
+            except Exception as e:
+                print(f"[ERROR] Model {model} gặp lỗi: {e}")
+                break
+
+    raise RuntimeError("❌ Tất cả model đều hết quota hoặc lỗi.")
 
 
 # %%
@@ -194,8 +208,8 @@ from typing import Optional, List
 class GeminiLLM(LLM, BaseModel):
     model_name: str
     api_key:    str
-    max_output_tokens: int = 1000
-    temperature:       float = 0.6
+    max_output_tokens: int = 2048
+    temperature:       float = 0.7
 
     @property
     def _llm_type(self) -> str:
