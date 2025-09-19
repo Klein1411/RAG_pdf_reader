@@ -30,3 +30,6 @@ models/
 
 # VS Code
 .vscode/
+
+# where to load file test
+pdf_place/
