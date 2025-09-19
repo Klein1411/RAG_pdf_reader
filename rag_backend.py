@@ -93,16 +93,17 @@ except ValueError as e:
 from dotenv import load_dotenv
 import os, requests
 
-load_dotenv()  # đọc các biến GEMINI_API_KEY, GEMINI_MODEL,…
+# ✅ đọc .env ngay trong thư mục project (mặc định)
+load_dotenv()
 
-API_KEY    = os.getenv("GEMINI_API_KEY")
-MODEL_ID   = os.getenv("GEMINI_MODEL", "gemini-exp-1206")
+API_KEY    = os.getenv("OPENROUTER_API_KEY")
+MODEL_ID   = os.getenv("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet")
 PROMPT     = os.getenv(
-    "GEMINI_PROMPT",
+    "OPENROUTER_PROMPT",
     "Bạn là một trợ lý hữu ích. Hãy trả lời đầy đủ và chi tiết. Đừng lặp lại câu trả lời nếu không cần thiết."
 )
-MAX_TOKENS = int(os.getenv("GEMINI_MAX_TOKENS", "2048"))
-TEMP       = float(os.getenv("GEMINI_TEMPERATURE", "0.7"))
+MAX_TOKENS = int(os.getenv("OPENROUTER_MAX_TOKENS", "512"))
+TEMP       = float(os.getenv("OPENROUTER_TEMPERATURE", "0.7"))
 
 # Kiểm tra
 print("API Key   :", "✓" if API_KEY else "✗")
@@ -114,83 +115,37 @@ print("Temperature:", TEMP)
 
 # %%
 # Cell 3: Định nghĩa hàm call_gemini(prompt) – đảm bảo luôn return str
-import time
-import requests
-
-last_call_time = 0
-
-# Danh sách model ưu tiên
-MODEL_FALLBACKS = [
-    "gemini-1.5-pro",
-    "gemini-2.0",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash"
-]
-
-def call_gemini(prompt: str) -> str:
+def call_openrouter(prompt: str) -> str:
     global last_call_time
 
     if not API_KEY:
-        raise ValueError("Please set GEMINI_API_KEY in .env")
+        raise ValueError("❌ Thiếu OPENROUTER_API_KEY trong .env")
 
-    for model in MODEL_FALLBACKS:
-        now = time.time()
-        # Giới hạn tốc độ: tối thiểu 0.5 giây giữa 2 lần gọi
-        if now - last_call_time < 0.5:
-            time.sleep(0.5 - (now - last_call_time))
-        last_call_time = time.time()
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {API_KEY.strip()}",
+        "Content-Type": "application/json",
+        "X-Title": "MyRAGApp"
+    }
+    payload = {
+        "model": "meta-llama/llama-3.1-405b-instruct",   # 👈 thay bằng model mạnh
+        "messages": [
+            {"role": "system", "content": PROMPT},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": MAX_TOKENS,
+        "temperature": TEMP,
+    }
 
-        print(f"\n;-; Đang thử model: {model}")
+    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    if resp.status_code != 200:
+        print("❌ HTTP", resp.status_code)
+        print("Resp error:", resp.text)
+        resp.raise_for_status()
 
-        # Xác định version
-        if model.startswith("gemini-2.0") or model.startswith("gemini-1.5"):
-            version = "v1"
-        else:
-            version = "v1beta"  # cho exp cũ (nếu thêm sau)
-        endpoint = ":generateContent"
+    data = resp.json()
+    return data["choices"][0]["message"]["content"]
 
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "maxOutputTokens": MAX_TOKENS,
-                "temperature": TEMP
-            }
-        }
-
-        url = f"https://generativelanguage.googleapis.com/{version}/models/{model}{endpoint}?key={API_KEY}"
-        print(f"[DEBUG] Gọi URL: {url}")
-
-        # --- Retry loop ---
-        for attempt in range(3):
-            resp = requests.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=30
-            )
-
-            if resp.status_code == 429:
-                print(f"[429] Hết quota hoặc quá tải ở {model}. Thử lại sau...")
-                break  # thoát retry → thử model kế tiếp
-
-            if resp.status_code == 404:
-                print(f"[404] Model {model} không tồn tại. Bỏ qua.")
-                break
-
-            try:
-                resp.raise_for_status()
-                data = resp.json()
-                cand = data.get("candidates", [{}])[0]
-                out = cand.get("output", "") or cand.get("content", "")
-                if isinstance(out, str):
-                    return out
-                parts = out.get("parts", [])
-                return "".join([p.get("text", "") for p in parts])
-            except Exception as e:
-                print(f"[ERROR] Model {model} gặp lỗi: {e}")
-                break
-
-    raise RuntimeError("❌ Tất cả model đều hết quota hoặc lỗi.")
 
 
 # %%
@@ -201,44 +156,69 @@ def call_gemini(prompt: str) -> str:
 
 # %%
 # Cell 5: Định nghĩa wrapper GeminiLLM dùng call_gemini
-from langchain.llms.base import LLM
-from pydantic import BaseModel
-from typing import Optional, List
+from typing import List, Optional
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+from langchain_core.outputs import ChatResult, ChatGeneration
+import requests
 
-class GeminiLLM(LLM, BaseModel):
-    model_name: str
-    api_key:    str
-    max_output_tokens: int = 2048
-    temperature:       float = 0.7
+class OpenRouterLLM(BaseChatModel):
+    model: str
+    api_key: str
+    max_tokens: int = 512
+    temperature: float = 0.7
+    url: str = "https://openrouter.ai/api/v1/chat/completions"
+
+    def _generate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager=None,
+        **kwargs
+    ) -> ChatResult:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "user", "content": m.content}
+                for m in messages
+                if isinstance(m, HumanMessage)
+            ],
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "temperature": kwargs.get("temperature", self.temperature),
+        }
+
+        resp = requests.post(self.url, headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content=content))]
+        )
 
     @property
     def _llm_type(self) -> str:
-        return "gemini"
+        return "openrouter_custom"
 
-    def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
-        # Gọi hàm call_gemini đã định nghĩa ở Cell 3
-        return call_gemini(prompt)
-
-    async def _acall(self, prompt: str, stop: Optional[List[str]] = None) -> str:
-        return self._call(prompt, stop)
 
 # %%
 # Cell 6: Khởi tạo pipeline RAG với GeminiLLM và vectordb
 from langchain.chains import RetrievalQA
 
 # 1) Khởi tạo GeminiLLM
-gemini_llm = GeminiLLM(
-    model_name=MODEL_ID,            # từ Cell 2
-    api_key=API_KEY,                # từ Cell 2
-    max_output_tokens=MAX_TOKENS,   # từ Cell 2
-    temperature=TEMP                # từ Cell 2
+llm = OpenRouterLLM(
+    model="meta-llama/llama-3.1-405b-instruct",
+    api_key=os.getenv("OPENROUTER_API_KEY"),
+    max_tokens=512,
+    temperature=0.7,
 )
-
-# 2) Tạo RetrievalQA chain
 retriever = vectordb.as_retriever(search_kwargs={"k": 4})
 qa_chain = RetrievalQA.from_chain_type(
-    llm=gemini_llm,
-    chain_type="stuff",
+    llm=llm,
     retriever=retriever,
     return_source_documents=True
 )
