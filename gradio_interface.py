@@ -1,14 +1,13 @@
 import gradio as gr
 from rag_backend import qa_chain
+import csv
+from datetime import datetime
 
 def respond(history, question):
-    # Gọi RAG
     result = qa_chain.invoke({"query": question})
     answer = result["result"]
     sources = [doc.metadata.get("source","") for doc in result["source_documents"]]
-    # Thêm cặp mới vào history
     history = history + [(question, answer)]
-    # Trả về (cập nhật) lịch sử chat và chuỗi nguồn
     return history, "\n".join(sources)
 
 with gr.Blocks(theme=gr.themes.Default(), css="""
@@ -51,4 +50,23 @@ with gr.Blocks(theme=gr.themes.Default(), css="""
     clear_btn.click(lambda: ([], ""), None, [chatbot, source_box])
     clear_btn.click(lambda: "", None, question)
 
-demo.launch(share=True)
+
+
+def flag_data(history, sources):
+    if not history:
+        return  
+    last_q, last_a = history[-1]
+    timestamp = datetime.now().isoformat()
+    # Mở file CSV và append (nếu chưa có header, có thể tự thêm 1 lần đầu)
+    with open(".gradio/flagged/manual_flags.csv", "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([last_q, last_a, sources, timestamp])
+        
+
+flag_btn.click(
+    fn=flag_data,
+    inputs=[chatbot, source_box],
+    outputs=None   # không cần trả gì lên UI
+)
+
+demo.launch(share=True)  
