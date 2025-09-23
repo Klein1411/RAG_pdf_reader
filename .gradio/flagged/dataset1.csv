@@ -1,6 +1,0 @@
-question,Trả lời,Các trang nguồn,timestamp
-Hãy nói sơ lược về clean code,"Clean code is code that is elegant and efficient. The logic should be straightforward to make it hard for bugs to hide, the dependencies minimal to ease maintenance, error handling complete according to an articulated strategy, and performance close to optimal so as not to tempt people to make the code messy with unprincipled optimizations. Clean code does one thing well.
-","1. CleanCode.pdf_page_2
-2. CleanCode.pdf_page_32
-3. CleanCode.pdf_page_166
-4. CleanCode.pdf_page_38",2025-09-19 12:43:01.448088

@@ -35,3 +35,8 @@ models/
 pdf_place/
 
 gemini_query.py
+
+.gradio/
+
+ca.pem
+certificate.pem

@@ -248,6 +248,6 @@ def ask(question: str):
 
 
 # %% test run
-ask("describe details as much as you can about Smell and Heuristic General.")
+# ask("describe details as much as you can about Smell and Heuristic General.")
 
 

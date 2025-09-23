@@ -10,6 +10,17 @@ def respond(history, question):
     history = history + [(question, answer)]
     return history, "\n".join(sources)
 
+
+def flag_data(history, sources):
+    if not history:
+        return  
+    last_q, last_a = history[-1]
+    timestamp = datetime.now().isoformat()
+    # Mở file CSV và append (nếu chưa có header, có thể tự thêm 1 lần đầu)
+    with open(".gradio/flagged/manual_flags.csv", "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([last_q, last_a, sources, timestamp])
+        
 with gr.Blocks(theme=gr.themes.Default(), css="""
 #header {text-align: center; margin-bottom: 1em;}
 #query-box {width: 100%;}
@@ -32,7 +43,7 @@ with gr.Blocks(theme=gr.themes.Default(), css="""
             )
             submit_btn = gr.Button("Submit", variant="primary")
         with gr.Column(scale=3):
-            chatbot = gr.Chatbot(label="💬 Trả lời", elem_id="answer-box")
+            chatbot = gr.Chatbot(label="💬 Trả lời", elem_id="answer-box", type="tuples")
             source_box = gr.Textbox(label="📑 Các trang nguồn", elem_id="source-box")
 
     # --- Footer: Clear & Flag ---
@@ -46,27 +57,16 @@ with gr.Blocks(theme=gr.themes.Default(), css="""
         inputs=[chatbot, question],          # truyền vào history + câu hỏi
         outputs=[chatbot, source_box]        # cập nhật lại history và sources
     )
+    flag_btn.click(
+        fn=flag_data,
+        inputs=[chatbot, source_box],
+        outputs=None   # không cần trả gì lên UI
+    )
     # Clear: reset chat và source, đồng thời clear question
     clear_btn.click(lambda: ([], ""), None, [chatbot, source_box])
     clear_btn.click(lambda: "", None, question)
 
 
 
-def flag_data(history, sources):
-    if not history:
-        return  
-    last_q, last_a = history[-1]
-    timestamp = datetime.now().isoformat()
-    # Mở file CSV và append (nếu chưa có header, có thể tự thêm 1 lần đầu)
-    with open(".gradio/flagged/manual_flags.csv", "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([last_q, last_a, sources, timestamp])
-        
-
-flag_btn.click(
-    fn=flag_data,
-    inputs=[chatbot, source_box],
-    outputs=None   # không cần trả gì lên UI
-)
 
 demo.launch(share=True)  
