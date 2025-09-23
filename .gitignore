@@ -40,3 +40,5 @@ gemini_query.py
 
 ca.pem
 certificate.pem
+
+.env
